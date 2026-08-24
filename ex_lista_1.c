@@ -28,6 +28,7 @@ int main(void)
         printf("Nodo %d tiene llave %d\n", ++i, current->key);
         current = current->next;
     }
+    free(current);
 
     free(a);
     free(b);
