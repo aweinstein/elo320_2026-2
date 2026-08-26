@@ -4,3 +4,9 @@ Este repositorio contiene los programas desarrollados en el marco de la asignatu
 
 ## 20260819
 * [ex_lista_1.c](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_lista_1.c): Ejemplo básico de una lista enlazada simple.
+
+## 20260824
+* [ex_lista_2](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_lista_2.c)
+
+## 20260826
+* [ex_stack](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_stack.c)
