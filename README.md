@@ -8,7 +8,13 @@ Este repositorio contiene los programas desarrollados en el marco de la asignatu
 * [ex_lista_1.c](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_lista_1.c): Ejemplo básico de una lista enlazada simple.
 
 ## 20260824
-* [ex_lista_2](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_lista_2.c): Ejemplo de una lista enlazada simple.
+* [ex_lista_2.c](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_lista_2.c): Ejemplo de una lista enlazada simple.
 
 ## 20260826
-* [ex_stack](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_stack.c): Ejemplo de stack.
+* [ex_stack.c](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_stack.c): Ejemplo de stack.
+
+## 20260831
+* [ex_buffer_circular.c](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_buffer_circular.c): Ejemplo de buffer circular.
+
+## 20260910
+* [ex_bst.c](https://github.com/aweinstein/elo320_2026-2/blob/main/ex_bst.c): Ejemplo de árbol binario de búsqueda (BST).
