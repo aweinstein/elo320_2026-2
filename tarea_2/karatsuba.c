@@ -24,7 +24,6 @@ typedef uint64_t digit;
 #define BETA        10000000000000000000ULL /* 10^19 */
 #define BETA_DIGITS 19                      /* digitos decimales por limb */
 
-#define N0 32 /* umbral n0: si n < N0 se usa BasecaseMultiply */
 
 /**************** Prototipo de Funciones ****************/
 
@@ -38,7 +37,8 @@ int abs_diff(digit *d, size_t n,
 /* Multiplicacion */
 void basecase_multiply(digit *c, const digit *a, size_t m,
                        const digit *b, size_t n);
-void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n);
+void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n,
+			size_t n0);
 
 /* Entrada/salida decimal */
 size_t from_decimal(const char *s, digit **out);
@@ -46,7 +46,7 @@ void print_number(const digit *x, size_t n);
 
 /* Autoprueba */
 digit random_digit(void);
-int check(const digit *a, const digit *b, size_t n);
+int check(const digit *a, const digit *b, size_t n, size_t n0);
 int self_test(void);
 
 /* Funciones auxiliares */
@@ -78,7 +78,8 @@ int main(int argc, char **argv)
     memcpy(b, y, yn * sizeof *b);
 
     digit *c = alloc_digits(2 * n);
-    karatsuba_multiply(c, a, b, n);
+    size_t n0 = 4;
+    karatsuba_multiply(c, a, b, n, n0);
     print_number(c, 2 * n);
 
     free(x);
@@ -219,10 +220,11 @@ void basecase_multiply(digit *c, const digit *a, size_t m,
 /***************** KaratsubaMultiply ****************/
 
 /* c[0..2n-1] <- a[0..n-1] * b[0..n-1] */
-void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n)
+void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n,
+                        size_t n0)
 {
 
-    if (n < N0) {
+    if (n < n0) {
         basecase_multiply(c, a, n, b, n);
         return;
     }
@@ -243,9 +245,9 @@ void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n)
     digit *c0 = alloc_digits(2 * k);
     digit *c1 = alloc_digits(2 * h);
     digit *c2 = alloc_digits(2 * k);
-    karatsuba_multiply(COMPLETAR, COMPLETAR, COMPLETAR, COMPLETAR);
-    karatsuba_multiply(COMPLETAR, COMPLETAR, COMPLETAR, COMPLETAR);
-    karatsuba_multiply(COMPLETAR, COMPLETAR, COMPLETAR, COMPLETAR);
+    karatsuba_multiply(COMPLETAR, COMPLETAR, COMPLETAR, COMPLETAR, n0);
+    karatsuba_multiply(COMPLETAR, COMPLETAR, COMPLETAR, COMPLETAR, n0);
+    karatsuba_multiply(COMPLETAR, COMPLETAR, COMPLETAR, COMPLETAR, n0);
 
     size_t mn = 2 * k + 1;
     digit *mid = alloc_digits(mn);
@@ -321,7 +323,7 @@ digit random_digit(void)
     return x;
 }
 
-int check(const digit *a, const digit *b, size_t n)
+int check(const digit *a, const digit *b, size_t n, size_t n0)
 {
     digit *ck = alloc_digits(2 * n), *cb = alloc_digits(2 * n);
     karatsuba_multiply(ck, a, b, n);
@@ -334,6 +336,7 @@ int check(const digit *a, const digit *b, size_t n)
 
 int self_test(void)
 {
+    size_t n0 = 4;
     int failures = 0;
     for (size_t n = 1; n <= 600; n++) {
         digit *a = alloc_digits(n), *b = alloc_digits(n);
@@ -342,11 +345,11 @@ int self_test(void)
             a[i] = random_digit();
             b[i] = random_digit();
         }
-        failures += !check(a, b, n);
+        failures += !check(a, b, n, n0);
 
         for (size_t i = 0; i < n; i++) /* operandos maximos: BETA^n - 1 */
             a[i] = b[i] = BETA - 1;
-        failures += !check(a, b, n);
+        failures += !check(a, b, n, n0);
 
         for (size_t i = 0; i < n; i++) { /* A0 = A1: una diferencia igual a cero */
             a[i] = random_digit();
@@ -357,11 +360,11 @@ int self_test(void)
             a[i] = a[i - k];
         if (n % 2 == 1)
             a[k - 1] = 0; /* A0 tiene un digito mas que A1 */
-        failures += !check(a, b, n);
+        failures += !check(a, b, n, n0);
 
         free(a);
         free(b);
     }
-    printf("self-test (N0 = %d): %s\n", N0, failures ? "FAILED" : "all OK");
+    printf("self-test (n0 = %zu): %s\n", n0, failures ? "FAILED" : "all OK");
     return failures != 0;
 }
