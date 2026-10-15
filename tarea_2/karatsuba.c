@@ -198,7 +198,7 @@ int abs_diff(digit *d, size_t n,
     return s;
 }
 
-/**************** BasecaseMultiply ****************/                                                   */
+/**************** BasecaseMultiply ****************/
 
 /* c[0..m+n-1] <- a[0..m-1] * b[0..n-1] */
 void basecase_multiply(digit *c, const digit *a, size_t m,
@@ -209,6 +209,7 @@ void basecase_multiply(digit *c, const digit *a, size_t m,
         digit carry = COMPLETAR;
         for (size_t i = 0; i < m; i++) {
             u128 t = COMPLETAR;
+	    split(t, &carry, COMPLETAR);
 
         }
         c[j + m] = COMPLETAR;
