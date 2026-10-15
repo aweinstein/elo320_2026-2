@@ -1,5 +1,5 @@
 /*
- * csv.c - Lee un archivo mult_cases.csv generado por gen_mult_csv.py.
+ * read_csv.c - Lee un archivo mult_cases.csv generado por gen_mult_csv.py.
  *
  * Cada línea tiene tres campos: a,b,p
  *   a, b : enteros sin signo de exactamente ND dígitos decimales
@@ -16,7 +16,7 @@
 #include <string.h>
 
 #ifndef ND
-#define ND 400                     /* digits per operand */
+#define ND (400*19)                   /* digits per operand in base beta=10^19 */
 #endif
 
 #define PD (2 * ND)                /* max digits in the product */

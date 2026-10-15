@@ -1,7 +1,7 @@
 /*
  * karatsuba.c - Multiplicacion usando Karatsuba con radix beta = 10^19
  * Ver Algorithm 1.3 en
- * Brent, R. P., & Zimmermann, P. (2011). Modern computer arithmetic (Vol. 18).
+ * Brent, R. P., & Zimmermann, P. (2010). Modern computer arithmetic (Vol. 18).
  * Cambridge: Cambridge University Press.
  *
  * Como BETA^2 > 2^64, la multiplicacion interna requiere de un tipo de datos de
@@ -71,7 +71,7 @@ int main(int argc, char **argv)
     size_t xn = from_decimal(argv[1], &x);
     size_t yn = from_decimal(argv[2], &y);
 
-    /* El Algoritmo 3 supone que ambos operandos tienen n digitos: se rellenan con ceros */
+    /* El Algoritmo 2 supone que ambos operandos tienen n digitos: se rellenan con ceros */
     size_t n = xn > yn ? xn : yn;
     digit *a = alloc_digits(n), *b = alloc_digits(n);
     memcpy(a, x, xn * sizeof *a);
@@ -326,7 +326,7 @@ digit random_digit(void)
 int check(const digit *a, const digit *b, size_t n, size_t n0)
 {
     digit *ck = alloc_digits(2 * n), *cb = alloc_digits(2 * n);
-    karatsuba_multiply(ck, a, b, n);
+    karatsuba_multiply(ck, a, b, n, n0);
     basecase_multiply(cb, a, n, b, n);
     int ok = memcmp(ck, cb, 2 * n * sizeof *ck) == 0;
     free(ck);
