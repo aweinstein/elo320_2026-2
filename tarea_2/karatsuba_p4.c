@@ -1,0 +1,564 @@
+/*
+ * karatsuba.c - Multiplicacion usando Karatsuba con radix beta = 10^19
+ * Ver Algorithm 1.3 en
+ * Brent, R. P., & Zimmermann, P. (2011). Modern computer arithmetic (Vol. 18).
+ * Cambridge: Cambridge University Press.
+ *
+ * Como BETA^2 > 2^64, la multiplicacion interna requiere de un tipo de datos de
+ * 128-bit. Este codigo utiliza la extension de GCC/Clang unsigned __int128,
+ * por lo que no es ISO-C.
+ *
+ * Microbenchmarking de basecase_multiply y karatsuba_multiply (Pregunta 4).
+ * Lee mult_cases_n.csv para n = 100, 200, ..., 1000 (en el directorio actual),
+ * mide el tiempo promedio de una multiplicacion para Basecase y para
+ * Karatsuba con n0 = 4, 8, 16, 32, 64, imprime una tabla y guarda los
+ * resultados en resultados.csv.
+ *
+ * Compilacion:  gcc -std=gnu11 -O2 -Wall -Wextra karatsuba_p4.c -o karatsuba_p4
+ * Uso:          ./karatsuba_p4
+ */
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+typedef unsigned __int128 u128;
+typedef uint64_t digit;
+
+#define BETA        10000000000000000000ULL /* 10^19 */
+#define BETA_DIGITS 19                      /* digitos decimales por limb */
+
+/**************** Prototipo de Funciones ****************/
+
+/* Suma, resta, comparacion */
+void add_at(digit *r, size_t rn, const digit *x, size_t xn, size_t off);
+void sub_at(digit *r, size_t rn, const digit *x, size_t xn, size_t off);
+int compare(const digit *x, size_t xn, const digit *y, size_t yn);
+int abs_diff(digit *d, size_t n,
+                    const digit *x, size_t xn, const digit *y, size_t yn);
+
+/* Multiplicacion */
+void basecase_multiply(digit *c, const digit *a, size_t m,
+                       const digit *b, size_t n);
+void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n,
+                        size_t n0);
+
+/* Entrada/salida decimal */
+size_t from_decimal(const char *s, digit **out);
+void print_number(const digit *x, size_t n);
+
+/* Autoprueba */
+digit random_digit(void);
+int check(const digit *a, const digit *b, size_t n, size_t n0);
+int self_test(void);
+
+/* Funciones auxiliares */
+digit *alloc_digits(size_t n);
+void fail(const char *msg);
+digit get(const digit *x, size_t n, size_t i);
+void split(u128 t, digit *hi, digit *lo);
+
+
+/**************** Lectura de los archivos CSV ****************/
+
+#define N_MAX 1000                 /* maximo n (digitos en base BETA) */
+#define ND (N_MAX * BETA_DIGITS)   /* maximo de digitos decimales por operando */
+#define PD (2 * ND)                /* maximo de digitos decimales del producto */
+#define LINE_LENGTH (ND + ND + PD + 8)  /* 3 campos, 2 comas, \r\n, \0, margen */
+#define INITIAL_CAPACITY 10
+
+#define REPETICIONES 10            /* mediciones por cada (algoritmo, n, n0) */
+
+/* Un caso de prueba ya convertido a base BETA */
+typedef struct {
+    digit *a, *b, *p;
+    size_t an, bn, pn;
+} mult_case;
+
+static void free_cases(mult_case *cases, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        free(cases[i].a);
+        free(cases[i].b);
+        free(cases[i].p);
+    }
+    free(cases);
+}
+
+/* Lee filename y convierte cada linea a,b,p a base BETA.
+   Retorna el numero de casos leidos y deja el arreglo en *out. */
+static size_t read_cases(const char *filename, mult_case **out)
+{
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL) {
+        perror(filename);
+        exit(EXIT_FAILURE);
+    }
+
+    /* Formato "%ND[^,],%ND[^,],%PD[^,\r\n]": los anchos coinciden con los buffers */
+    char fmt[64];
+    snprintf(fmt, sizeof fmt, "%%%d[^,],%%%d[^,],%%%d[^,\r\n]", ND, ND, PD);
+
+    size_t capacity = INITIAL_CAPACITY;
+    size_t count = 0;
+    mult_case *cases = malloc(capacity * sizeof *cases);
+    if (cases == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+
+    /* static: buffers grandes (~150 KB en total) fuera del stack */
+    static char line[LINE_LENGTH];
+    static char a[ND + 1], b[ND + 1], p[PD + 1];
+    size_t line_no = 0;
+
+    while (fgets(line, sizeof line, fp) != NULL) {
+        line_no++;
+
+        if (strchr(line, '\n') == NULL && !feof(fp)) {
+            fprintf(stderr, "%s:%zu: linea demasiado larga, se omite\n",
+                    filename, line_no);
+            int ch;
+            while ((ch = fgetc(fp)) != '\n' && ch != EOF)
+                ;
+            continue;
+        }
+
+        if (sscanf(line, fmt, a, b, p) != 3) {
+            fprintf(stderr, "%s:%zu: linea mal formada, se omite\n",
+                    filename, line_no);
+            continue;
+        }
+
+        if (count == capacity) {
+            capacity *= 2;
+            mult_case *tmp = realloc(cases, capacity * sizeof *cases);
+            if (tmp == NULL) {
+                perror("realloc");
+                exit(EXIT_FAILURE);
+            }
+            cases = tmp;
+        }
+
+        mult_case *c = &cases[count++];
+        c->an = from_decimal(a, &c->a);
+        c->bn = from_decimal(b, &c->b);
+        c->pn = from_decimal(p, &c->p);
+    }
+    fclose(fp);
+    *out = cases;
+    return count;
+}
+
+/**************** Microbenchmarking ****************/
+
+/* Mide el tiempo promedio de UNA multiplicacion de n digitos.
+   n0 == 0 indica basecase_multiply; n0 > 0, karatsuba_multiply con ese n0.
+
+   Tecnica (documento de microbenchmarking del Aula):
+   - clock() justo antes y justo despues del codigo a medir.
+   - Como la resolucion de clock() es limitada, cada medicion ejecuta las
+     count multiplicaciones del archivo y divide el tiempo total por count.
+   - La medicion se repite REPETICIONES veces y se reporta el promedio.
+   Los resultados se guardan en c[i] y se verifican despues de medir. */
+static double measure(digit **c, const mult_case *cases, size_t count,
+                      size_t n, size_t n0)
+{
+    double times[REPETICIONES];
+
+    for (int r = 0; r < REPETICIONES; r++) {
+        clock_t start = clock(); /* inicio timer */
+        for (size_t i = 0; i < count; i++) {
+            if (n0 == 0)
+                basecase_multiply(c[i], cases[i].a, n, cases[i].b, n);
+            else
+                karatsuba_multiply(c[i], cases[i].a, cases[i].b, n, n0);
+        }
+        clock_t end = clock();   /* detengo el timer */
+        times[r] = ((double)(end - start) / CLOCKS_PER_SEC) / count;
+    }
+
+    double mean = 0;
+    for (int r = 0; r < REPETICIONES; r++)
+        mean += times[r];
+    return mean / REPETICIONES;
+}
+
+/* Verifica (fuera de la medicion) que c[i] coincide con el producto del CSV */
+static int verify(digit **c, const mult_case *cases, size_t count, size_t n)
+{
+    int ok = 1;
+    for (size_t i = 0; i < count; i++)
+        if (compare(c[i], 2 * n, cases[i].p, cases[i].pn) != 0) {
+            fprintf(stderr, "ERROR: producto incorrecto en la linea %zu\n", i + 1);
+            ok = 0;
+        }
+    return ok;
+}
+
+/**************** Main ****************/
+
+int main(void)
+{
+    const size_t n0s[] = {4, 8, 16, 32, 64};
+    const size_t n_n0s = sizeof n0s / sizeof n0s[0];
+    const char *out_name = "resultados.csv";
+
+    FILE *out = fopen(out_name, "w");
+    if (out == NULL) {
+        perror(out_name);
+        return EXIT_FAILURE;
+    }
+    fprintf(out, "algoritmo,n,n0,tiempo_s\n");
+
+    printf("%-12s %6s %6s %16s\n", "Algoritmo", "n", "n0", "Tiempo [s]");
+    printf("------------------------------------------\n");
+
+    int all_ok = 1;
+    for (size_t n = 100; n <= N_MAX; n += 100) {
+        char filename[64];
+        snprintf(filename, sizeof filename, "mult_cases_%zu.csv", n);
+
+        /* Lectura y conversion a base BETA: FUERA de la medicion */
+        mult_case *cases;
+        size_t count = read_cases(filename, &cases);
+        if (count == 0) {
+            fprintf(stderr, "%s: no hay casos\n", filename);
+            return EXIT_FAILURE;
+        }
+        for (size_t i = 0; i < count; i++)
+            if (cases[i].an != n || cases[i].bn != n) {
+                fprintf(stderr, "%s:%zu: los operandos no tienen %zu digitos\n",
+                        filename, i + 1, n);
+                return EXIT_FAILURE;
+            }
+
+        /* Buffers para los resultados (2n digitos cada uno), tambien fuera */
+        digit **c = malloc(count * sizeof *c);
+        if (c == NULL) {
+            perror("malloc");
+            return EXIT_FAILURE;
+        }
+        for (size_t i = 0; i < count; i++)
+            c[i] = alloc_digits(2 * n);
+
+        /* Basecase */
+        double t = measure(c, cases, count, n, 0);
+        all_ok &= verify(c, cases, count, n);
+        printf("%-12s %6zu %6s %16.6e\n", "Basecase", n, "-", t);
+        fprintf(out, "Basecase,%zu,,%.6e\n", n, t);
+
+        /* Karatsuba, para cada n0 */
+        for (size_t j = 0; j < n_n0s; j++) {
+            t = measure(c, cases, count, n, n0s[j]);
+            all_ok &= verify(c, cases, count, n);
+            printf("%-12s %6zu %6zu %16.6e\n", "Karatsuba", n, n0s[j], t);
+            fprintf(out, "Karatsuba,%zu,%zu,%.6e\n", n, n0s[j], t);
+        }
+        fflush(stdout);
+
+        for (size_t i = 0; i < count; i++)
+            free(c[i]);
+        free(c);
+        free_cases(cases, count);
+    }
+
+    fclose(out);
+    printf("\nResultados guardados en %s\n", out_name);
+    if (!all_ok)
+        fprintf(stderr, "ATENCION: hubo productos incorrectos\n");
+    return all_ok ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+
+/**************** Funciones auxiliares ****************/
+
+digit *alloc_digits(size_t n)
+{
+    digit *p = calloc(n ? n : 1, sizeof *p); /* inicializado en cero */
+    if (p == NULL) {
+        perror("calloc");
+        exit(EXIT_FAILURE);
+    }
+    return p;
+}
+
+void fail(const char *msg)
+{
+    fprintf(stderr, "internal error: %s\n", msg);
+    abort();
+}
+
+/* x[i] si i < n, si no 0: trata x como rellenado con ceros a cualquier largo. */
+digit get(const digit *x, size_t n, size_t i)
+{
+    return i < n ? x[i] : 0;
+}
+
+/* Separa t < BETA^2 en sus dos digitos en base BETA: t = hi*BETA + lo.
+   Es el paso (uv)_b: hi = floor(t / BETA), lo = t mod BETA. */
+void split(u128 t, digit *hi, digit *lo)
+{
+    digit q = (digit)(t / BETA);
+    *hi = q;
+    *lo = (digit)(t - (u128)q * BETA);
+}
+
+/**************** Suma, resta, comparacion ****************/
+
+/* r <- r + x * BETA^off, donde r tiene rn digitos y x tiene xn digitos.
+   Quien llama garantiza que el resultado cabe en rn digitos. */
+void add_at(digit *r, size_t rn, const digit *x, size_t xn, size_t off)
+{
+    digit carry = 0;
+    for (size_t i = 0; i < xn || carry; i++) {
+        size_t p = off + i;
+        digit xi = get(x, xn, i);
+        if (p >= rn) { /* mas alla de r: todo lo que queda debe ser cero */
+            if (xi != 0 || carry != 0)
+                fail("add_at overflow");
+            continue;
+        }
+        /* BETA > 2^63, asi que la suma de dos digitos puede superar 64 bits */
+        u128 t = (u128)r[p] + xi + carry; /* < 2*BETA */
+        carry = (t >= BETA);
+        r[p] = (digit)(carry ? t - BETA : t);
+    }
+}
+
+/* r <- r - x * BETA^off, donde r tiene rn digitos y x tiene xn digitos.
+   Quien llama garantiza que el resultado no es negativo. */
+void sub_at(digit *r, size_t rn, const digit *x, size_t xn, size_t off)
+{
+    digit borrow = 0;
+    for (size_t i = 0; i < xn || borrow; i++) {
+        size_t p = off + i;
+        digit xi = get(x, xn, i);
+        if (p >= rn) {
+            if (xi != 0 || borrow != 0)
+                fail("sub_at underflow");
+            continue;
+        }
+        digit s = xi + borrow; /* <= BETA < 2^64, sin desborde */
+        if (r[p] >= s) {
+            r[p] -= s;
+            borrow = 0;
+        } else {
+            r[p] = r[p] + (BETA - s); /* se mantiene < BETA */
+            borrow = 1;
+        }
+    }
+}
+
+/* Retorna sign(x - y), comparando desde el digito mas significativo. */
+int compare(const digit *x, size_t xn, const digit *y, size_t yn)
+{
+    size_t n = xn > yn ? xn : yn;
+    for (size_t i = n; i-- > 0;) {
+        digit xi = get(x, xn, i), yi = get(y, yn, i);
+        if (xi != yi)
+            return xi > yi ? 1 : -1;
+    }
+    return 0;
+}
+
+/* d[0..n-1] <- |x - y| y retorna sign(x - y).
+   El valor absoluto se obtiene restando el operando menor
+   al mayor; el signo se guarda por separado. */
+int abs_diff(digit *d, size_t n,
+                    const digit *x, size_t xn, const digit *y, size_t yn)
+{
+    int s = compare(x, xn, y, yn);
+    memset(d, 0, n * sizeof *d);
+    if (s > 0) {
+        memcpy(d, x, xn * sizeof *d);
+        sub_at(d, n, y, yn, 0);
+    } else if (s < 0) {
+        memcpy(d, y, yn * sizeof *d);
+        sub_at(d, n, x, xn, 0);
+    }
+    return s;
+}
+
+/**************** BasecaseMultiply ****************/
+
+/* c[0..m+n-1] <- a[0..m-1] * b[0..n-1] */
+void basecase_multiply(digit *c, const digit *a, size_t m,
+                       const digit *b, size_t n)
+{
+    memset(c, 0, (m + n) * sizeof *c);
+    for (size_t j = 0; j < n; j++) {
+        digit carry = 0;
+        for (size_t i = 0; i < m; i++) {
+            u128 t = (u128)a[i] * b[j] + c[i + j] + carry; /* <= BETA^2-1 */
+	    split(t, &carry, &c[i + j]);
+        }
+        c[j + m] = carry;
+    }
+}
+
+/***************** KaratsubaMultiply ****************/
+
+/* c[0..2n-1] <- a[0..n-1] * b[0..n-1] */
+void karatsuba_multiply(digit *c, const digit *a, const digit *b, size_t n,
+                        size_t n0)
+{
+    /* Lineas 1-3 */
+    if (n < n0) {
+        basecase_multiply(c, a, n, b, n);
+        return;
+    }
+
+    /* Linea 4: k = ceil(n/2); las partes altas tienen h = n - k <= k digitos */
+    size_t k = (n + 1) / 2;
+    size_t h = n - k;
+
+    /* Linea 5: A0 = A mod BETA^k, A1 = A div BETA^k.
+       Con digitos little-endian esto es solo aritmetica de punteros. */
+    const digit *a0 = a, *a1 = a + k;
+    const digit *b0 = b, *b1 = b + k;
+
+    /* Linea 6, mas los operandos |A0 - A1| y |B0 - B1| de la linea 9.
+       Ambas diferencias son < BETA^k, asi que caben en k digitos. */
+    digit *da = alloc_digits(k);
+    digit *db = alloc_digits(k);
+    int sa = abs_diff(da, k, a0, k, a1, h);
+    int sb = abs_diff(db, k, b0, k, b1, h);
+
+    /* Lineas 7-9 */
+    digit *c0 = alloc_digits(2 * k);
+    digit *c1 = alloc_digits(2 * h);
+    digit *c2 = alloc_digits(2 * k);
+    karatsuba_multiply(c0, a0, b0, k, n0);
+    karatsuba_multiply(c1, a1, b1, h, n0);
+    karatsuba_multiply(c2, da, db, k, n0);
+
+    /* Linea 10, coeficiente central: M = C0 + C1 - sA*sB*C2.
+       M es igual a A0*B1 + A1*B0, asi que nunca es negativo, y tanto M como
+       C0 + C1 son < 2*BETA^(2k): bastan 2k+1 digitos. Sumar C0 + C1
+       antes de restar C2 mantiene todo valor intermedio >= 0. */
+    size_t mn = 2 * k + 1;
+    digit *mid = alloc_digits(mn);
+    add_at(mid, mn, c0, 2 * k, 0);
+    add_at(mid, mn, c1, 2 * h, 0);
+    if (sa * sb > 0)
+        sub_at(mid, mn, c2, 2 * k, 0);
+    else if (sa * sb < 0)
+        add_at(mid, mn, c2, 2 * k, 0);
+    /* sa * sb == 0: una de las diferencias es cero, asi que C2 = 0 */
+
+    /* Linea 10: C = C0 + M*BETA^k + C1*BETA^(2k).
+       C0 (digitos 0..2k-1) y C1*BETA^(2k) (digitos 2k..2n-1) no se
+       traslapan, asi que se copian; luego se suma M con desplazamiento k. */
+    memcpy(c, c0, 2 * k * sizeof *c);
+    memcpy(c + 2 * k, c1, 2 * h * sizeof *c);
+    add_at(c, 2 * n, mid, mn, k);
+
+    free(da);
+    free(db);
+    free(c0);
+    free(c1);
+    free(c2);
+    free(mid);
+}
+
+/**************** Entrada/salida decimal ****************/
+
+/* Interpreta un string decimal; guarda los digitos en *out y retorna cuantos son. */
+size_t from_decimal(const char *s, digit **out)
+{
+    size_t len = strlen(s);
+    size_t n = (len + BETA_DIGITS - 1) / BETA_DIGITS;
+    digit *x = alloc_digits(n);
+    for (size_t i = 0; i < n; i++) {
+        /* el digito i toma los caracteres [end - 19, end) contados desde la derecha */
+        size_t end = len - i * BETA_DIGITS;
+        size_t start = end > BETA_DIGITS ? end - BETA_DIGITS : 0;
+        digit v = 0;
+        for (size_t p = start; p < end; p++) {
+            if (s[p] < '0' || s[p] > '9') {
+                fprintf(stderr, "invalid decimal number: %s\n", s);
+                exit(EXIT_FAILURE);
+            }
+            v = v * 10 + (digit)(s[p] - '0'); /* < 10^19 < 2^64 */
+        }
+        x[i] = v;
+    }
+    *out = x;
+    return n;
+}
+
+void print_number(const digit *x, size_t n)
+{
+    while (n > 0 && x[n - 1] == 0)
+        n--; /* omite los digitos cero iniciales */
+    if (n == 0) {
+        puts("0");
+        return;
+    }
+    printf("%" PRIu64, x[n - 1]);
+    for (size_t i = n - 1; i-- > 0;)
+        printf("%019" PRIu64, x[i]); /* los digitos internos conservan sus ceros */
+    putchar('\n');
+}
+
+/**************** Autoprueba: compara Karatsuba con el basecase ****************/
+
+digit random_digit(void)
+{
+    digit x;
+    do {
+        x = 0;
+        for (int i = 0; i < 5; i++)
+            x = (x << 15) | (digit)(rand() & 0x7FFF);
+    } while (x >= BETA);
+    return x;
+}
+
+int check(const digit *a, const digit *b, size_t n, size_t n0)
+{
+    digit *ck = alloc_digits(2 * n), *cb = alloc_digits(2 * n);
+    karatsuba_multiply(ck, a, b, n, n0);
+    basecase_multiply(cb, a, n, b, n);
+    int ok = memcmp(ck, cb, 2 * n * sizeof *ck) == 0;
+    free(ck);
+    free(cb);
+    return ok;
+}
+
+int self_test(void)
+{
+    size_t n0 = 4;
+    int failures = 0;
+    for (size_t n = 1; n <= 600; n++) {
+        digit *a = alloc_digits(n), *b = alloc_digits(n);
+
+        for (size_t i = 0; i < n; i++) { /* operandos aleatorios */
+            a[i] = random_digit();
+            b[i] = random_digit();
+        }
+        failures += !check(a, b, n, n0);
+
+        for (size_t i = 0; i < n; i++) /* operandos maximos: BETA^n - 1 */
+            a[i] = b[i] = BETA - 1;
+        failures += !check(a, b, n, n0);
+
+        for (size_t i = 0; i < n; i++) { /* A0 = A1: una diferencia igual a cero */
+            a[i] = random_digit();
+            b[i] = random_digit();
+        }
+        size_t k = (n + 1) / 2;
+        for (size_t i = k; i < n; i++)
+            a[i] = a[i - k];
+        if (n % 2 == 1)
+            a[k - 1] = 0; /* A0 tiene un digito mas que A1 */
+        failures += !check(a, b, n, n0);
+
+        free(a);
+        free(b);
+    }
+    printf("self-test (n0 = %zu): %s\n", n0, failures ? "FAILED" : "all OK");
+    return failures != 0;
+}
