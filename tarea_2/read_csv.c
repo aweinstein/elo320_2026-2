@@ -1,14 +1,14 @@
 /*
- * read_csv.c - Lee un archivo mult_cases.csv generado por gen_mult_csv.py.
+ * read_csv.c - Lee un archivo mult_cases_{n}.csv generado por gen_mult_csv.py.
  *
  * Cada línea tiene tres campos: a,b,p
  *   a, b : enteros sin signo de exactamente ND dígitos decimales
  *   p    : a*b, con a lo más 2*ND dígitos decimales
  *
  * Los números se almacenan como strings.
- * ND debe coincidir con NUM_DIGITS en el script de Python.
+ * ND debe coincidir con el numero de digitos decimales de cada numero a y b.
  * Se puede cambiar aquí o al compilar:
- * gcc -Wall -Wextra -O2 -DND=500 csv.c -o csv
+ * gcc -Wall -Wextra -O2 -DND=7600 read_csv.c -o read_csv
  */
 
 #include <stdio.h>
